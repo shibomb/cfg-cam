@@ -3,6 +3,17 @@ QT -= gui
 
 CONFIG += c++11
 
+# Fix for std::byte conflict with Windows API
+DEFINES += WIN32_LEAN_AND_MEAN
+DEFINES += NOMINMAX
+
+# Disable C++17 std::byte
+QMAKE_CXXFLAGS += -fno-char8_t
+QMAKE_CXXFLAGS += -std=c++11
+
+# Windows API libraries
+LIBS += -lole32 -loleaut32 -lstrmiids
+
 TARGET = WebCameraConfig
 CONFIG += console
 CONFIG -= app_bundle

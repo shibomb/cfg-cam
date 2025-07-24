@@ -117,15 +117,27 @@ void DisplayDeviceSettings() {
 }
 
 //this function includes small string parser to get parameter, its value and flag.
-void SetDeviceSettings(IEnumMoniker *pEnum) {
+void SetDeviceSettings(IEnumMoniker *pEnum, int targetDeviceNumber) {
     logMe(LOG_DBG,"Set devices settings...");
+    if (targetDeviceNumber > 0) {
+        logMe(LOG_INFO, "Target device number: " + to_string(targetDeviceNumber));
+    }
 
     IMoniker *pMoniker = NULL;
     IAMVideoProcAmp *pProcAmp = 0;
     IAMCameraControl *pCamCtrl = 0;
     IPropertyBag *pPropBag;
+    int currentDeviceNumber = 0;
 
         while (pEnum->Next(1, &pMoniker, NULL) == S_OK) {
+            currentDeviceNumber++;
+            
+            // Skip if target device number is specified and doesn't match
+            if (targetDeviceNumber > 0 && currentDeviceNumber != targetDeviceNumber) {
+                logMe(LOG_DBG, "Skipping device " + to_string(currentDeviceNumber) + " (target: " + to_string(targetDeviceNumber) + ")");
+                pMoniker->Release();
+                continue;
+            }
             // Get the capture filter pointer for the IPropertyBag interface
             HRESULT hr = pMoniker->BindToStorage(0, 0, IID_PPV_ARGS(&pPropBag));
             if (FAILED(hr)) {
@@ -191,6 +203,7 @@ void SetDeviceSettings(IEnumMoniker *pEnum) {
                                     fr2 = settArray[i].find('[');
                                     if ((fr1 != string::npos) && (fr2 != string::npos)) {
                                         Parameter = settArray[i].substr(0, fr1);
+                                        logMe(LOG_DBG, "Parsing parameter: " + Parameter);
                                         try {
                                             ParValue = stol(settArray[i].substr(fr1 +1, fr2 - fr1 -2)); //-2 is " ["
                                         } catch(invalid_argument& ia) {
@@ -203,6 +216,8 @@ void SetDeviceSettings(IEnumMoniker *pEnum) {
                                         } else {
                                             FlagManual = false;
                                         }
+
+                                        logMe(LOG_DBG, "Setting " + Parameter + " = " + to_string(ParValue) + " " + (FlagManual ? "[Manual]" : "[Auto]"));
 
                                         //set parameters
                                         if (VideoProcAmpCapable) {
@@ -226,14 +241,20 @@ void SetDeviceSettings(IEnumMoniker *pEnum) {
                                                 hr = pProcAmp->Set(VideoProcAmp_Sharpness, ParValue, FlagManual ? VideoProcAmp_Flags_Manual : VideoProcAmp_Flags_Auto);
                                             } else if (Parameter == "VideoProcAmp_WhiteBalance") {
                                                 hr = pProcAmp->Set(VideoProcAmp_WhiteBalance, ParValue, FlagManual ? VideoProcAmp_Flags_Manual : VideoProcAmp_Flags_Auto);
-                                            } else logMe(LOG_DBG, "VideoProcAmp string not found"); //no match found, so skip in silent
+                                            } else logMe(LOG_DBG, "VideoProcAmp string not found: " + Parameter); //no match found, so skip in silent
 
                                             logMe(LOG_DBG, "HRESULT: " + to_string(hr));
                                         } //if VideoProcAmpCapable
 
                                         if (CameraControlCapable) {
                                             if (Parameter == "CameraControl_Exposure") {
+                                                logMe(LOG_DBG, "Setting CameraControl_Exposure to " + to_string(ParValue) + " with flags " + (FlagManual ? "Manual" : "Auto"));
                                                 hr = pCamCtrl->Set(CameraControl_Exposure, ParValue, FlagManual ? CameraControl_Flags_Manual : CameraControl_Flags_Auto);
+                                                if (SUCCEEDED(hr)) {
+                                                    logMe(LOG_DBG, "CameraControl_Exposure set successfully");
+                                                } else {
+                                                    logMe(LOG_ERR, "Failed to set CameraControl_Exposure. HRESULT: " + to_string(hr));
+                                                }
                                             } else if (Parameter == "CameraControl_Focus") {
                                                 hr = pCamCtrl->Set(CameraControl_Focus, ParValue, FlagManual ? CameraControl_Flags_Manual : CameraControl_Flags_Auto);
                                             } else if (Parameter == "CameraControl_Iris") {
@@ -246,7 +267,7 @@ void SetDeviceSettings(IEnumMoniker *pEnum) {
                                                 hr = pCamCtrl->Set(CameraControl_Tilt, ParValue, FlagManual ? CameraControl_Flags_Manual : CameraControl_Flags_Auto);
                                             } else if (Parameter == "CameraControl_Zoom") {
                                                 hr = pCamCtrl->Set(CameraControl_Zoom, ParValue, FlagManual ? CameraControl_Flags_Manual : CameraControl_Flags_Auto);
-                                            } else logMe(LOG_DBG, "CameraControl string not found"); //no match found, so skip in silent
+                                            } else logMe(LOG_DBG, "CameraControl string not found: " + Parameter); //no match found, so skip in silent
 
                                             logMe(LOG_DBG, "HRESULT: " + to_string(hr));
                                         } //if CameraControlCapable
@@ -275,207 +296,224 @@ void GetDeviceSettings(IEnumMoniker *pEnum) {
     IAMCameraControl *pCamCtrl = 0;
     IPropertyBag *pPropBag;
     int i = 0;
-        while (pEnum->Next(1, &pMoniker, NULL) == S_OK) {
-            // Get the capture filter pointer for the IPropertyBag interface
-            HRESULT hr = pMoniker->BindToStorage(0, 0, IID_PPV_ARGS(&pPropBag));
-            if (FAILED(hr)) {
-                pMoniker->Release();
-                continue;
-            }
-
-            logMe(LOG_DBG,"Bind to properties storage SUCCEEDED");            
-
-            VARIANT var;
-            VariantInit(&var);
-
-            i++;
-            // add device number (just for info)
-            settArray.push_back("Device #" + to_string(i));
-            // add indexes of the device descriptions begin
-            idxArray.push_back(settArray.size());
-
-            // Get device path
-            hr = pPropBag->Read(L"DevicePath", &var, 0);
-            if (SUCCEEDED(hr)) {
-                // The device path is not intended for display.
-                settArray.push_back(ConvertBSTRToMBS(var.bstrVal));
-                VariantClear(&var);
-            }
-
-            // Get friendly name.
-            hr = pPropBag->Read(L"FriendlyName", &var, 0);
-            if (SUCCEEDED(hr)) {
-                settArray.push_back(ConvertBSTRToMBS(var.bstrVal));
-                VariantClear(&var);
-            }
-
-            long Val, Flags;
-            bool VideoProcAmpCapable = true,
-                 CameraControlCapable = true;
-
-            // Get the capture filter pointer for the IAMVideoProcAmp interface.
-            hr = pMoniker->BindToObject(0, 0, IID_IAMVideoProcAmp, (void**)&pProcAmp);
-            if (FAILED(hr)) {
-                // The device does not support IAMVideoProcAmp.
-                logMe(LOG_DBG, "IAMVideoProcAmp not supported by device");
-                VideoProcAmpCapable = false;
-            }
-
-            // Get the capture filter pointer for the IAMCameraControl interface.
-            hr = pMoniker->BindToObject(0, 0, IID_IAMCameraControl, (void**)&pCamCtrl);
-            if (FAILED(hr)) {
-                // The device does not support IAMCameraControl, so skip.
-                // if it is last in the list, then Release moniker+Continue possible.
-                logMe(LOG_DBG, "IAMCameraControl not supported by device");
-                CameraControlCapable = false;
-            }
-
-            if (VideoProcAmpCapable) {
-                logMe(LOG_DBG,"Bind to object with IID_IAMVideoProcAmp SUCCEEDED");
-
-                // Get the current value.
-                hr = pProcAmp->Get(VideoProcAmp_BacklightCompensation, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("VideoProcAmp_BacklightCompensation=" +
-                            to_string(Val) +
-                            ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pProcAmp->Get(VideoProcAmp_Brightness, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("VideoProcAmp_Brightness=" +
-                            to_string(Val) +
-                            ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pProcAmp->Get(VideoProcAmp_ColorEnable, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("VideoProcAmp_ColorEnable=" +
-                            to_string(Val) +
-                            ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pProcAmp->Get(VideoProcAmp_Contrast, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("VideoProcAmp_Contrast=" +
-                            to_string(Val) +
-                            ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pProcAmp->Get(VideoProcAmp_Gain, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("VideoProcAmp_Gain=" +
-                            to_string(Val) +
-                            ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pProcAmp->Get(VideoProcAmp_Gamma, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("VideoProcAmp_Gamma=" +
-                            to_string(Val) +
-                            ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pProcAmp->Get(VideoProcAmp_Hue, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("VideoProcAmp_Hue=" +
-                            to_string(Val) +
-                            ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pProcAmp->Get(VideoProcAmp_Saturation, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("VideoProcAmp_Saturation=" +
-                            to_string(Val) +
-                            ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pProcAmp->Get(VideoProcAmp_Sharpness, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("VideoProcAmp_Sharpness=" +
-                            to_string(Val) +
-                            ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pProcAmp->Get(VideoProcAmp_WhiteBalance, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("VideoProcAmp_WhiteBalance=" +
-                            to_string(Val) +
-                            ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                pProcAmp->Release();
-            } //if VideoProcAmpCapable
-
-            if (CameraControlCapable) {
-                logMe(LOG_DBG,"Bind to object with IID_IAMCameraControl SUCCEEDED");
-
-                hr = pCamCtrl->Get(CameraControl_Exposure, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("CameraControl_Exposure=" +
-                            to_string(Val) +
-                            ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pCamCtrl->Get(CameraControl_Focus, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("CameraControl_Focus=" +
-                            to_string(Val) +
-                            ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pCamCtrl->Get(CameraControl_Iris, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("CameraControl_Iris=" +
-                            to_string(Val) +
-                            ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pCamCtrl->Get(CameraControl_Pan, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("CameraControl_Pan=" +
-                            to_string(Val) +
-                            ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pCamCtrl->Get(CameraControl_Roll, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("CameraControle_Roll=" +
-                            to_string(Val) +
-                            ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pCamCtrl->Get(CameraControl_Tilt, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("CameraControl_Tilt=" +
-                            to_string(Val) +
-                            ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                hr = pCamCtrl->Get(CameraControl_Zoom, &Val, &Flags);
-                if (SUCCEEDED(hr)) {
-                    settArray.push_back("CameraControl_Zoom=" +
-                            to_string(Val) +
-                            ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
-                }
-
-                pCamCtrl->Release();
-            } // if CameraControlCapable
-
-            settArray.push_back("---end of the device #" + to_string(i));
-            settArray.push_back("");
-            // add indexes of the device descriptions end
-            idxArray.push_back(settArray.size());
-
-            pPropBag->Release();
+    bool deviceFound = false;
+    
+    while (pEnum->Next(1, &pMoniker, NULL) == S_OK) {
+        deviceFound = true;
+        // Get the capture filter pointer for the IPropertyBag interface
+        HRESULT hr = pMoniker->BindToStorage(0, 0, IID_PPV_ARGS(&pPropBag));
+        if (FAILED(hr)) {
+            logMe(LOG_ERR, "Failed to bind to properties storage. HRESULT: " + to_string(hr));
             pMoniker->Release();
-        } //while
+            continue;
+        }
 
+        logMe(LOG_DBG,"Bind to properties storage SUCCEEDED");            
+
+        VARIANT var;
+        VariantInit(&var);
+
+        i++;
+        // add device number (just for info)
+        settArray.push_back("Device #" + to_string(i));
+        // add indexes of the device descriptions begin
+        idxArray.push_back(settArray.size());
+
+        // Get device path
+        hr = pPropBag->Read(L"DevicePath", &var, 0);
+        if (SUCCEEDED(hr)) {
+            // The device path is not intended for display.
+            settArray.push_back(ConvertBSTRToMBS(var.bstrVal));
+            VariantClear(&var);
+        }
+
+        // Get friendly name.
+        hr = pPropBag->Read(L"FriendlyName", &var, 0);
+        if (SUCCEEDED(hr)) {
+            settArray.push_back(ConvertBSTRToMBS(var.bstrVal));
+            VariantClear(&var);
+        }
+
+        long Val, Flags;
+        bool VideoProcAmpCapable = true,
+             CameraControlCapable = true;
+
+        // Get the capture filter pointer for the IAMVideoProcAmp interface.
+        hr = pMoniker->BindToObject(0, 0, IID_IAMVideoProcAmp, (void**)&pProcAmp);
+        if (FAILED(hr)) {
+            // The device does not support IAMVideoProcAmp.
+            logMe(LOG_DBG, "IAMVideoProcAmp not supported by device. HRESULT: " + to_string(hr));
+            VideoProcAmpCapable = false;
+        }
+
+        // Get the capture filter pointer for the IAMCameraControl interface.
+        hr = pMoniker->BindToObject(0, 0, IID_IAMCameraControl, (void**)&pCamCtrl);
+        if (FAILED(hr)) {
+            // The device does not support IAMCameraControl, so skip.
+            // if it is last in the list, then Release moniker+Continue possible.
+            logMe(LOG_DBG, "IAMCameraControl not supported by device. HRESULT: " + to_string(hr));
+            CameraControlCapable = false;
+        }
+
+        // Add a note if device doesn't support any settings
+        if (!VideoProcAmpCapable && !CameraControlCapable) {
+            settArray.push_back("Note: This device does not support adjustable settings");
+        }
+
+        if (VideoProcAmpCapable) {
+            logMe(LOG_DBG,"Bind to object with IID_IAMVideoProcAmp SUCCEEDED");
+
+            // Get the current value.
+            hr = pProcAmp->Get(VideoProcAmp_BacklightCompensation, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("VideoProcAmp_BacklightCompensation=" +
+                        to_string(Val) +
+                        ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pProcAmp->Get(VideoProcAmp_Brightness, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("VideoProcAmp_Brightness=" +
+                        to_string(Val) +
+                        ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pProcAmp->Get(VideoProcAmp_ColorEnable, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("VideoProcAmp_ColorEnable=" +
+                        to_string(Val) +
+                        ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pProcAmp->Get(VideoProcAmp_Contrast, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("VideoProcAmp_Contrast=" +
+                        to_string(Val) +
+                        ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pProcAmp->Get(VideoProcAmp_Gain, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("VideoProcAmp_Gain=" +
+                        to_string(Val) +
+                        ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pProcAmp->Get(VideoProcAmp_Gamma, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("VideoProcAmp_Gamma=" +
+                        to_string(Val) +
+                        ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pProcAmp->Get(VideoProcAmp_Hue, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("VideoProcAmp_Hue=" +
+                        to_string(Val) +
+                        ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pProcAmp->Get(VideoProcAmp_Saturation, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("VideoProcAmp_Saturation=" +
+                        to_string(Val) +
+                        ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pProcAmp->Get(VideoProcAmp_Sharpness, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("VideoProcAmp_Sharpness=" +
+                        to_string(Val) +
+                        ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pProcAmp->Get(VideoProcAmp_WhiteBalance, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("VideoProcAmp_WhiteBalance=" +
+                        to_string(Val) +
+                        ((Flags > VideoProcAmp_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            pProcAmp->Release();
+        } //if VideoProcAmpCapable
+
+        if (CameraControlCapable) {
+            logMe(LOG_DBG,"Bind to object with IID_IAMCameraControl SUCCEEDED");
+
+            hr = pCamCtrl->Get(CameraControl_Exposure, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("CameraControl_Exposure=" +
+                        to_string(Val) +
+                        ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pCamCtrl->Get(CameraControl_Focus, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("CameraControl_Focus=" +
+                        to_string(Val) +
+                        ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pCamCtrl->Get(CameraControl_Iris, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("CameraControl_Iris=" +
+                        to_string(Val) +
+                        ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pCamCtrl->Get(CameraControl_Pan, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("CameraControl_Pan=" +
+                        to_string(Val) +
+                        ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pCamCtrl->Get(CameraControl_Roll, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("CameraControle_Roll=" +
+                        to_string(Val) +
+                        ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pCamCtrl->Get(CameraControl_Tilt, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("CameraControl_Tilt=" +
+                        to_string(Val) +
+                        ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            hr = pCamCtrl->Get(CameraControl_Zoom, &Val, &Flags);
+            if (SUCCEEDED(hr)) {
+                settArray.push_back("CameraControl_Zoom=" +
+                        to_string(Val) +
+                        ((Flags > CameraControl_Flags_Auto) ? " [Manual]" : " [Auto]"));
+            }
+
+            pCamCtrl->Release();
+        } // if CameraControlCapable
+
+        settArray.push_back("---end of the device #" + to_string(i));
+        settArray.push_back("");
+        // add indexes of the device descriptions end
+        idxArray.push_back(settArray.size());
+
+        pPropBag->Release();
+        pMoniker->Release();
+    } //while
+
+    if (!deviceFound) {
+        logMe(LOG_WRN, "No video devices found");
+        settArray.push_back("Device #1");
+        settArray.push_back("No video devices found");
+        settArray.push_back("---end of the device #1");
+        settArray.push_back("");
+        idxArray.push_back(settArray.size());
+    }
 }
 
 //manipulate video device settings:
 //get moniker for video device and call right function.
-void MyDevicesSettings(int gsd) {
+void MyDevicesSettings(int gsd, int targetDeviceNumber) {
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (SUCCEEDED(hr)) {
         IEnumMoniker *pEnum;
@@ -484,35 +522,45 @@ void MyDevicesSettings(int gsd) {
 
         hr = EnumerateDevices(CLSID_VideoInputDeviceCategory, &pEnum);
         if (SUCCEEDED(hr)) {
-            switch (gsd) {
-            case GET_SETT:
-                GetDeviceSettings(pEnum);
-                break;
-            case SET_SETT:
-                SetDeviceSettings(pEnum);
-                break;
-            case DIS_SETT:
-                DisplayDeviceSettings();
-                break;
-            case DIS_INFO:
-                DisplayDeviceInformation(pEnum);
-                break;
-            default:
-                logMe(LOG_ERR,"Unknown action requested.");
-                break;
+            try {
+                switch (gsd) {
+                case GET_SETT:
+                    GetDeviceSettings(pEnum);
+                    break;
+                case SET_SETT:
+                    SetDeviceSettings(pEnum, targetDeviceNumber);
+                    break;
+                case DIS_SETT:
+                    DisplayDeviceSettings();
+                    break;
+                case DIS_INFO:
+                    DisplayDeviceInformation(pEnum);
+                    break;
+                default:
+                    logMe(LOG_ERR,"Unknown action requested.");
+                    break;
+                }
+            } catch (...) {
+                logMe(LOG_ERR, "Exception occurred during device operation");
             }
             pEnum->Release();
-            logMe(LOG_DBG, "Enemurate SUCCEEDED.");
+            logMe(LOG_DBG, "Enumerate SUCCEEDED.");
         } else {
-            logMe(LOG_DBG, "HRESULT:" + to_string(hr));
+            logMe(LOG_ERR, "Failed to enumerate devices. HRESULT: " + to_string(hr));
         }
 
         CoUninitialize();
+    } else {
+        logMe(LOG_ERR, "Failed to initialize COM. HRESULT: " + to_string(hr));
     }
 }
 
-void CamSetAll::loadSett(string cfgfilename) {
+void CamSetAll::loadSett(string cfgfilename, int targetDeviceNumber) {
     logMe(LOG_DBG,"reading... " + cfgfilename);
+    if (targetDeviceNumber > 0) {
+        logMe(LOG_INFO, "Target device number: " + to_string(targetDeviceNumber));
+    }
+    
     //read from .cfg file to RAM
     string line;
     ifstream cfgfile;
@@ -536,27 +584,57 @@ void CamSetAll::loadSett(string cfgfilename) {
     cfgfile.close();
     //ignore small descriptions
     if (settArray.size() > 1) {
-        MyDevicesSettings(SET_SETT);
+        MyDevicesSettings(SET_SETT, targetDeviceNumber);
     } else logMe(LOG_DBG, "File too small: " + cfgfilename);
 }
 
 void CamSetAll::saveSett(string cfgfilename){
+    logMe(LOG_DBG, "Starting saveSett for file: " + cfgfilename);
+    
+    // Clear previous settings
+    settArray.clear();
+    idxArray.clear();
+    
     //read from device and save to .cfg file
     MyDevicesSettings(GET_SETT); //get from device
-    logMe(LOG_DBG, "Get Divice settings COMPLETE");
-    MyDevicesSettings(DIS_SETT); //display settings
-    logMe(LOG_DBG, "Display Divice settings COMPLETE");
-
-    ofstream cfgfile;
-    cfgfile.open (cfgfilename, ios::trunc | ios::binary); //overwrite .cfg file
-    if (cfgfile.is_open()) {
-        cfgfile << "/ WebCameraConfig settings file" << "\n"; //write info line (comment)
-        for (uint32_t i = 0; i < settArray.size(); i++)
-            cfgfile << settArray[i] + "\n"; //write line
-    } else {
-        logMe(LOG_ERR, "Unable to open file for writing: " + cfgfilename);
+    logMe(LOG_DBG, "Get Device settings COMPLETE. Settings count: " + to_string(settArray.size()));
+    
+    if (settArray.size() == 0) {
+        logMe(LOG_WRN, "No settings collected from devices");
+        // Create a minimal file with device info
+        settArray.push_back("Device #1");
+        settArray.push_back("No adjustable settings found");
+        settArray.push_back("---end of the device #1");
+        settArray.push_back("");
     }
-    cfgfile.close();
+    
+    MyDevicesSettings(DIS_SETT); //display settings
+    logMe(LOG_DBG, "Display Device settings COMPLETE");
+
+    // Ensure we save to the current directory
+    string fullPath = cfgfilename;
+    if (fullPath.find("\\") == string::npos && fullPath.find("/") == string::npos) {
+        // If no path specified, save to current directory
+        fullPath = "./" + cfgfilename;
+    }
+    
+    logMe(LOG_DBG, "Saving to full path: " + fullPath);
+    
+    ofstream cfgfile;
+    cfgfile.open (fullPath, ios::trunc | ios::binary); //overwrite .cfg file
+    if (cfgfile.is_open()) {
+        logMe(LOG_DBG, "File opened successfully for writing: " + fullPath);
+        cfgfile << "/ WebCameraConfig settings file" << "\n"; //write info line (comment)
+        cfgfile << "/ Generated on: " << __DATE__ << " " << __TIME__ << "\n";
+        for (uint32_t i = 0; i < settArray.size(); i++) {
+            cfgfile << settArray[i] + "\n"; //write line
+        }
+        cfgfile.close();
+        logMe(LOG_INFO, "Settings saved successfully to: " + fullPath);
+    } else {
+        logMe(LOG_ERR, "Unable to open file for writing: " + fullPath);
+        logMe(LOG_ERR, "Error code: " + to_string(errno));
+    }
 }
 
 void CamSetAll::displayFoundDevices() {
