@@ -16,17 +16,112 @@ CamSetAll::~CamSetAll() {
     //some
 }
 
-string ConvertWCSToMBS(const wchar_t* pstr, long wslen)
-{
+string ConvertWCSToMBS(const wchar_t* pstr, long wslen) {
     int len = ::WideCharToMultiByte(CP_ACP, 0, pstr, wslen, NULL, 0, NULL, NULL);
-
     string dblstr(len, '\0');
-    len = ::WideCharToMultiByte(CP_ACP, 0 /* no flags */,
-                                pstr, wslen /* not necessary NULL-terminated */,
-                                &dblstr[0], len,
-                                NULL, NULL /* no default char */);
-
+    len = ::WideCharToMultiByte(CP_ACP, 0, pstr, wslen, &dblstr[0], len, NULL, NULL);
     return dblstr;
+}
+
+bool WaitForDeviceReady(IPropertyBag *pPropBag, int maxRetries) {
+    logMe(LOG_DBG, "Checking device readiness...");
+    
+    for (int retry = 0; retry < maxRetries; retry++) {
+        VARIANT var;
+        VariantInit(&var);
+        
+        // Try to read device properties to check if device is ready
+        HRESULT hr = pPropBag->Read(L"DevicePath", &var, 0);
+        if (SUCCEEDED(hr)) {
+            VariantClear(&var);
+            
+            // Try to read FriendlyName as well
+            hr = pPropBag->Read(L"FriendlyName", &var, 0);
+            if (SUCCEEDED(hr)) {
+                VariantClear(&var);
+                logMe(LOG_DBG, "Device is ready after " + to_string(retry + 1) + " attempts");
+                return true;
+            }
+        }
+        
+        VariantClear(&var);
+        
+        if (retry < maxRetries - 1) {
+            logMe(LOG_DBG, "Device not ready, retrying in 500ms... (attempt " + to_string(retry + 1) + "/" + to_string(maxRetries) + ")");
+            Sleep(500); // Wait 500ms before retry
+        }
+    }
+    
+    logMe(LOG_WRN, "Device not ready after " + to_string(maxRetries) + " attempts");
+    return false;
+}
+
+bool VerifySetting(IAMVideoProcAmp *pProcAmp, IAMCameraControl *pCamCtrl, const string& parameter, long expectedValue, bool expectedManual) {
+    long currentValue, currentFlags;
+    HRESULT hr = E_FAIL;
+    
+    // Try VideoProcAmp first
+    if (pProcAmp != NULL) {
+        if (parameter == "VideoProcAmp_BacklightCompensation") {
+            hr = pProcAmp->Get(VideoProcAmp_BacklightCompensation, &currentValue, &currentFlags);
+        } else if (parameter == "VideoProcAmp_Brightness") {
+            hr = pProcAmp->Get(VideoProcAmp_Brightness, &currentValue, &currentFlags);
+        } else if (parameter == "VideoProcAmp_ColorEnable") {
+            hr = pProcAmp->Get(VideoProcAmp_ColorEnable, &currentValue, &currentFlags);
+        } else if (parameter == "VideoProcAmp_Contrast") {
+            hr = pProcAmp->Get(VideoProcAmp_Contrast, &currentValue, &currentFlags);
+        } else if (parameter == "VideoProcAmp_Gain") {
+            hr = pProcAmp->Get(VideoProcAmp_Gain, &currentValue, &currentFlags);
+        } else if (parameter == "VideoProcAmp_Gamma") {
+            hr = pProcAmp->Get(VideoProcAmp_Gamma, &currentValue, &currentFlags);
+        } else if (parameter == "VideoProcAmp_Hue") {
+            hr = pProcAmp->Get(VideoProcAmp_Hue, &currentValue, &currentFlags);
+        } else if (parameter == "VideoProcAmp_Saturation") {
+            hr = pProcAmp->Get(VideoProcAmp_Saturation, &currentValue, &currentFlags);
+        } else if (parameter == "VideoProcAmp_Sharpness") {
+            hr = pProcAmp->Get(VideoProcAmp_Sharpness, &currentValue, &currentFlags);
+        } else if (parameter == "VideoProcAmp_WhiteBalance") {
+            hr = pProcAmp->Get(VideoProcAmp_WhiteBalance, &currentValue, &currentFlags);
+        }
+    }
+    
+    // If not found in VideoProcAmp, try CameraControl
+    if (FAILED(hr) && pCamCtrl != NULL) {
+        if (parameter == "CameraControl_Exposure") {
+            hr = pCamCtrl->Get(CameraControl_Exposure, &currentValue, &currentFlags);
+        } else if (parameter == "CameraControl_Focus") {
+            hr = pCamCtrl->Get(CameraControl_Focus, &currentValue, &currentFlags);
+        } else if (parameter == "CameraControl_Iris") {
+            hr = pCamCtrl->Get(CameraControl_Iris, &currentValue, &currentFlags);
+        } else if (parameter == "CameraControl_Pan") {
+            hr = pCamCtrl->Get(CameraControl_Pan, &currentValue, &currentFlags);
+        } else if (parameter == "CameraControl_Roll") {
+            hr = pCamCtrl->Get(CameraControl_Roll, &currentValue, &currentFlags);
+        } else if (parameter == "CameraControl_Tilt") {
+            hr = pCamCtrl->Get(CameraControl_Tilt, &currentValue, &currentFlags);
+        } else if (parameter == "CameraControl_Zoom") {
+            hr = pCamCtrl->Get(CameraControl_Zoom, &currentValue, &currentFlags);
+        }
+    }
+    
+    if (SUCCEEDED(hr)) {
+        bool currentManual = (currentFlags & VideoProcAmp_Flags_Manual) != 0;
+        bool valueMatch = (currentValue == expectedValue);
+        bool manualMatch = (currentManual == expectedManual);
+        
+        if (valueMatch && manualMatch) {
+            logMe(LOG_DBG, "Setting verified: " + parameter + " = " + to_string(currentValue) + " " + (currentManual ? "[Manual]" : "[Auto]"));
+            return true;
+        } else {
+            logMe(LOG_WRN, "Setting verification failed: " + parameter + 
+                  " expected " + to_string(expectedValue) + " " + (expectedManual ? "[Manual]" : "[Auto]") +
+                  " but got " + to_string(currentValue) + " " + (currentManual ? "[Manual]" : "[Auto]"));
+            return false;
+        }
+    } else {
+        logMe(LOG_DBG, "Could not verify setting: " + parameter + " (parameter not supported)");
+        return true; // Assume success if we can't verify
+    }
 }
 
 //std-string stuff to add save current device settings to .cfg file.
@@ -141,6 +236,15 @@ void SetDeviceSettings(IEnumMoniker *pEnum, int targetDeviceNumber) {
             // Get the capture filter pointer for the IPropertyBag interface
             HRESULT hr = pMoniker->BindToStorage(0, 0, IID_PPV_ARGS(&pPropBag));
             if (FAILED(hr)) {
+                logMe(LOG_DBG, "Failed to bind to storage for device " + to_string(currentDeviceNumber));
+                pMoniker->Release();
+                continue;
+            }
+
+            // Wait for device to be ready (especially important after system startup)
+            if (!WaitForDeviceReady(pPropBag)) {
+                logMe(LOG_WRN, "Device " + to_string(currentDeviceNumber) + " is not ready, skipping...");
+                pPropBag->Release();
                 pMoniker->Release();
                 continue;
             }
@@ -271,6 +375,14 @@ void SetDeviceSettings(IEnumMoniker *pEnum, int targetDeviceNumber) {
 
                                             logMe(LOG_DBG, "HRESULT: " + to_string(hr));
                                         } //if CameraControlCapable
+                                        
+                                        // Verify setting was applied correctly (especially important after system startup)
+                                        if (SUCCEEDED(hr)) {
+                                            Sleep(100); // Small delay to allow setting to take effect
+                                            if (!VerifySetting(pProcAmp, pCamCtrl, Parameter, ParValue, FlagManual)) {
+                                                logMe(LOG_WRN, "Setting verification failed for: " + Parameter);
+                                            }
+                                        }
                                     } //if actual parameter found (fr1,fr2)
                                 } //for
                                 if (VideoProcAmpCapable) pProcAmp->Release();

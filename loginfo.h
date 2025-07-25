@@ -5,6 +5,7 @@
 using namespace std;
 
 extern int verbLevel; //declare and define it at 'main.cpp' but also use in 'loginfo.cpp'
+extern string logFileName; //declare and define it at 'main.cpp' but also use in 'loginfo.cpp'
 
 enum {
     LOG_DBG  = 1, //debug info
@@ -22,5 +23,6 @@ enum {
 
 void logM(int logLevel, string message);
 void logMe(int logLevel, string message);
+void logToFile(string message); //write message to log file
 
 #endif // LOGINFO_H

@@ -5,3 +5,4 @@ Makefile.Release
 release/
 debug/
 cam_sett.cfg
+*.log

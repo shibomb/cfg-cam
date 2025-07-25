@@ -37,6 +37,8 @@ void GetDeviceSettings(IEnumMoniker *pEnum); //get settings from devices
 HRESULT EnumerateDevices(REFGUID category, IEnumMoniker **ppEnum); //Enumerate devices of given category to get devices monikers
 string ConvertBSTRToMBS(BSTR bstr); //general variant string to standard string conversion
 string ConvertWCSToMBS(const wchar_t* pstr, long wslen); //intermediate string conversion
+bool WaitForDeviceReady(IPropertyBag *pPropBag, int maxRetries = 10); //wait for device to be ready
+bool VerifySetting(IAMVideoProcAmp *pProcAmp, IAMCameraControl *pCamCtrl, const string& parameter, long expectedValue, bool expectedManual); //verify if setting was applied correctly
 
 class CamSetAll {
 public:

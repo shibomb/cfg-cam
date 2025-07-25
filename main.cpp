@@ -14,6 +14,8 @@
 int verbLevel = VERB_NORMAL; //display messages (default)
 bool ignoreFriendlyName = false;
 int targetDeviceNumber = -1; // -1 means all devices (default)
+int maxRetries = 3; // Maximum number of retries for setting application
+string logFileName = ""; // Log file name (empty means no file logging)
 
 void helpme() {
     logMe(LOG_INFO, "");
@@ -28,6 +30,8 @@ void helpme() {
     logMe(LOG_INFO, "--profile [string] : Uses string as filename to save/load settings.");
     logMe(LOG_INFO, "--ignorefn         : Ignore FriendlyName when looking for devices.");
     logMe(LOG_INFO, "--device [number]  : Apply settings only to specified device number (1-based).");
+    logMe(LOG_INFO, "--retries [number] : Maximum number of retries for setting application (default: 3).");
+    logMe(LOG_INFO, "--logfile [file]   : Write log messages to specified file.");
     logMe(LOG_INFO, "--verbose          : Enable verbose output (includes debug messages).");
     logMe(LOG_INFO, "--quiet            : Suppress all output except errors.");
     logMe(LOG_INFO, "--debug            : Enable debug output (same as --verbose).");
@@ -72,6 +76,29 @@ int main(int argc, char *argv[])
                     return -1;
                 }
             }
+        } else if (arg == "--retries") {
+            if (++i < argc) {
+                try {
+                    maxRetries = stoi(argv[i]);
+                    if (maxRetries < 1 || maxRetries > 10) {
+                        logMe(LOG_ERR, "Retry count must be between 1 and 10: " + string(argv[i]));
+                        return -1;
+                    }
+                } catch (const std::invalid_argument &e) {
+                    logMe(LOG_ERR, "Invalid retry count: " + string(argv[i]));
+                    return -1;
+                } catch (const std::out_of_range &e) {
+                    logMe(LOG_ERR, "Retry count out of range: " + string(argv[i]));
+                    return -1;
+                }
+            }
+        } else if (arg == "--logfile") {
+            if (++i < argc) {
+                logFileName = argv[i];
+            } else {
+                logMe(LOG_ERR, "Log file name not specified");
+                return -1;
+            }
         } else if (arg == "--verbose" || arg == "--debug") {
             verbLevel = VERB_FULL;
         } else if (arg == "--quiet") {
@@ -97,6 +124,8 @@ int main(int argc, char *argv[])
     logMe(LOG_INFO, "Debug: ProfStr = " + ProfStr);
     logMe(LOG_INFO, "Debug: verbLevel = " + to_string(verbLevel));
     logMe(LOG_INFO, "Debug: targetDeviceNumber = " + to_string(targetDeviceNumber));
+    logMe(LOG_INFO, "Debug: maxRetries = " + to_string(maxRetries));
+    logMe(LOG_INFO, "Debug: logFileName = " + (logFileName.empty() ? "(none)" : logFileName));
 
     CamSetAll camupd;
     try {
@@ -116,7 +145,31 @@ int main(int argc, char *argv[])
 
         //default behavior is to load/apply settings from the .cfg file
         logMe(LOG_INFO, "Debug: Calling loadSett(" + ProfStr + ".cfg)");
-        camupd.loadSett(ProfStr + ".cfg", targetDeviceNumber);
+        
+        // Retry logic for setting application (especially important after system startup)
+        bool settingsApplied = false;
+        for (int retry = 1; retry <= maxRetries; retry++) {
+            if (retry > 1) {
+                logMe(LOG_INFO, "Retry " + to_string(retry) + "/" + to_string(maxRetries) + " for setting application...");
+                Sleep(1000); // Wait 1 second between retries
+            }
+            
+            try {
+                camupd.loadSett(ProfStr + ".cfg", targetDeviceNumber);
+                settingsApplied = true;
+                break;
+            } catch (string e) {
+                if (retry == maxRetries) {
+                    throw e; // Re-throw on final retry
+                } else {
+                    logMe(LOG_WRN, "Setting application failed (attempt " + to_string(retry) + "): " + e);
+                }
+            }
+        }
+        
+        if (settingsApplied) {
+            logMe(LOG_INFO, "Settings applied successfully");
+        }
 
     } catch(string e) {
         logMe(LOG_ERR, e);
